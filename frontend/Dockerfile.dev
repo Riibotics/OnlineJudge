@@ -1,0 +1,24 @@
+FROM node:12-alpine
+
+# Install git and other dependencies
+RUN apk add --no-cache git
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy source code
+COPY . .
+
+# Build vendor DLL
+RUN npm run build:dll
+
+# Expose port
+EXPOSE 8080
+
+# Start development server
+CMD ["npm", "run", "dev"]

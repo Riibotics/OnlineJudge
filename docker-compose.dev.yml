@@ -1,0 +1,70 @@
+version: "3"
+services:
+
+  oj-redis:
+    image: redis:4.0-alpine
+    container_name: oj-redis-dev
+    restart: always
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - ./backend/data/redis:/data
+
+  oj-postgres:
+    image: postgres:10-alpine
+    container_name: oj-postgres-dev
+    restart: always
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ./backend/data/postgres:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=onlinejudge
+      - POSTGRES_USER=onlinejudge
+      - POSTGRES_PASSWORD=onlinejudge
+
+  oj-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: oj-backend-dev
+    restart: always
+    depends_on:
+      - oj-redis
+      - oj-postgres
+    volumes:
+      # Mount local code for development
+      - ./backend:/app
+      - ./backend/data/backend:/data
+    environment:
+      - POSTGRES_DB=onlinejudge
+      - POSTGRES_USER=onlinejudge
+      - POSTGRES_PASSWORD=onlinejudge
+      - POSTGRES_HOST=oj-postgres
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=oj-redis
+      - REDIS_PORT=6379
+      - OJ_ENV=production
+      # Judge server token (match with judge server if needed)
+      - JUDGE_SERVER_TOKEN=CHANGE_THIS
+    ports:
+      - "0.0.0.0:8000:8000"
+
+  oj-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: oj-frontend-dev
+    restart: always
+    volumes:
+      # Mount source code for hot reload, but preserve node_modules and build artifacts
+      - ./frontend/src:/app/src
+      - ./frontend/config:/app/config
+      - /app/node_modules
+      - /app/dist
+    environment:
+      - TARGET=http://oj-backend:8000
+    ports:
+      - "0.0.0.0:8080:8080"
+    depends_on:
+      - oj-backend
