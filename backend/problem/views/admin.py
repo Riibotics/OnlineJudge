@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import logging
 # import shutil
 import tempfile
 import zipfile
@@ -30,22 +31,39 @@ from ..serializers import (CreateContestProblemSerializer, CompileSPJSerializer,
                            FPSProblemSerializer)
 from ..utils import TEMPLATE_BASE, build_problem_template
 
+logger = logging.getLogger(__name__)
+
 
 class TestCaseZipProcessor(object):
     def process_zip(self, uploaded_zip_file, spj, dir=""):
         try:
             zip_file = zipfile.ZipFile(uploaded_zip_file, "r")
-        except zipfile.BadZipFile:
+        except zipfile.BadZipFile as e:
+            logger.error(f"Bad zip file: {e}")
             raise APIError("Bad zip file")
+        except Exception as e:
+            logger.error(f"Error opening zip file: {e}")
+            raise APIError(f"Error opening zip file: {str(e)}")
+        
         name_list = zip_file.namelist()
+        logger.info(f"Zip file contains: {name_list}")
         test_case_list = self.filter_name_list(name_list, spj=spj, dir=dir)
         if not test_case_list:
-            raise APIError("Empty file")
+            logger.error(f"No test cases found in zip. Looking in dir='{dir}', spj={spj}")
+            raise APIError(f"No test case files found. Expected files like {dir}1.in, {dir}1.out")
 
         test_case_id = rand_str()
         test_case_dir = os.path.join(settings.TEST_CASE_DIR, test_case_id)
-        os.mkdir(test_case_dir)
-        os.chmod(test_case_dir, 0o710)
+        
+        # Ensure parent directory exists
+        os.makedirs(settings.TEST_CASE_DIR, exist_ok=True)
+        
+        try:
+            os.mkdir(test_case_dir)
+            os.chmod(test_case_dir, 0o710)
+        except Exception as e:
+            logger.error(f"Failed to create test case directory {test_case_dir}: {e}")
+            raise APIError(f"Failed to create test case directory: {str(e)}")
 
         size_cache = {}
         md5_cache = {}
@@ -554,74 +572,124 @@ class ImportProblemAPI(CSRFExemptAPIView, TestCaseZipProcessor):
         if form.is_valid():
             file = form.cleaned_data["file"]
             tmp_file = f"/tmp/{rand_str()}.zip"
-            with open(tmp_file, "wb") as f:
-                for chunk in file:
-                    f.write(chunk)
+            try:
+                with open(tmp_file, "wb") as f:
+                    for chunk in file:
+                        f.write(chunk)
+                logger.info(f"Uploaded file saved to {tmp_file}")
+            except Exception as e:
+                logger.error(f"Failed to save uploaded file: {e}")
+                return self.error(f"Failed to save uploaded file: {str(e)}")
         else:
-            return self.error("Upload failed")
+            logger.error(f"Form validation failed: {form.errors}")
+            return self.error(f"Upload failed: {form.errors}")
 
         count = 0
-        with zipfile.ZipFile(tmp_file, "r") as zip_file:
-            name_list = zip_file.namelist()
-            for item in name_list:
-                if "/problem.json" in item:
-                    count += 1
-            with transaction.atomic():
-                for i in range(1, count + 1):
-                    with zip_file.open(f"{i}/problem.json") as f:
-                        problem_info = json.load(f)
+        try:
+            with zipfile.ZipFile(tmp_file, "r") as zip_file:
+                name_list = zip_file.namelist()
+                logger.info(f"Zip file contents: {name_list}")
+                
+                for item in name_list:
+                    if "/problem.json" in item:
+                        count += 1
+                
+                if count == 0:
+                    return self.error("No problem.json file found in zip. Expected format: 1/problem.json, 2/problem.json, etc.")
+                
+                logger.info(f"Found {count} problems to import")
+                
+                with transaction.atomic():
+                    for i in range(1, count + 1):
+                        problem_json_path = f"{i}/problem.json"
+                        try:
+                            with zip_file.open(problem_json_path) as f:
+                                problem_info = json.load(f)
+                        except KeyError:
+                            logger.error(f"Missing {problem_json_path} in zip file")
+                            return self.error(f"Missing {problem_json_path} in zip file")
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Invalid JSON in {problem_json_path}: {e}")
+                            return self.error(f"Invalid JSON in {problem_json_path}: {str(e)}")
+                        
                         serializer = ImportProblemSerializer(data=problem_info)
                         if not serializer.is_valid():
-                            return self.error(f"Invalid problem format, error is {serializer.errors}")
+                            logger.error(f"Invalid problem format for problem {i}: {serializer.errors}")
+                            return self.error(f"Invalid problem format for problem {i}: {serializer.errors}")
                         else:
                             problem_info = serializer.data
                             for item in problem_info["template"].keys():
                                 if item not in SysOptions.language_names:
+                                    logger.error(f"Unsupported language {item}")
                                     return self.error(f"Unsupported language {item}")
 
-                        problem_info["display_id"] = problem_info["display_id"][:24]
-                        for k, v in problem_info["template"].items():
-                            problem_info["template"][k] = build_problem_template(v["prepend"], v["template"],
-                                                                                 v["append"])
+                        try:
+                            problem_info["display_id"] = problem_info["display_id"][:24]
+                            for k, v in problem_info["template"].items():
+                                problem_info["template"][k] = build_problem_template(v["prepend"], v["template"],
+                                                                                     v["append"])
 
-                        spj = problem_info["spj"] is not None
-                        rule_type = problem_info["rule_type"]
-                        test_case_score = problem_info["test_case_score"]
+                            spj = problem_info["spj"] is not None
+                            rule_type = problem_info["rule_type"]
+                            test_case_score = problem_info["test_case_score"]
 
-                        # process test case
-                        _, test_case_id = self.process_zip(tmp_file, spj=spj, dir=f"{i}/testcase/")
+                            # process test case
+                            logger.info(f"Processing test cases for problem {i}")
+                            _, test_case_id = self.process_zip(tmp_file, spj=spj, dir=f"{i}/testcase/")
+                            logger.info(f"Test cases processed successfully with ID: {test_case_id}")
+                        except Exception as e:
+                            logger.error(f"Failed to process problem {i}: {e}")
+                            return self.error(f"Failed to process problem {i}: {str(e)}")
 
-                        problem_obj = Problem.objects.create(_id=problem_info["display_id"],
-                                                             title=problem_info["title"],
-                                                             description=problem_info["description"]["value"],
-                                                             input_description=problem_info["input_description"][
-                                                                 "value"],
-                                                             output_description=problem_info["output_description"][
-                                                                 "value"],
-                                                             hint=problem_info["hint"]["value"],
-                                                             test_case_score=test_case_score if test_case_score else [],
-                                                             time_limit=problem_info["time_limit"],
-                                                             memory_limit=problem_info["memory_limit"],
-                                                             samples=problem_info["samples"],
-                                                             template=problem_info["template"],
-                                                             rule_type=problem_info["rule_type"],
-                                                             source=problem_info["source"],
-                                                             spj=spj,
-                                                             spj_code=problem_info["spj"]["code"] if spj else None,
-                                                             spj_language=problem_info["spj"][
-                                                                 "language"] if spj else None,
-                                                             spj_version=rand_str(8) if spj else "",
-                                                             languages=SysOptions.language_names,
-                                                             created_by=request.user,
-                                                             visible=False,
-                                                             difficulty=Difficulty.MID,
-                                                             total_score=sum(item["score"] for item in test_case_score)
-                                                             if rule_type == ProblemRuleType.OI else 0,
-                                                             test_case_id=test_case_id
-                                                             )
-                        for tag_name in problem_info["tags"]:
-                            tag_obj, _ = ProblemTag.objects.get_or_create(name=tag_name)
-                            problem_obj.tags.add(tag_obj)
+                        try:
+                            problem_obj = Problem.objects.create(_id=problem_info["display_id"],
+                                                                 title=problem_info["title"],
+                                                                 description=problem_info["description"]["value"],
+                                                                 input_description=problem_info["input_description"][
+                                                                     "value"],
+                                                                 output_description=problem_info["output_description"][
+                                                                     "value"],
+                                                                 hint=problem_info["hint"]["value"],
+                                                                 test_case_score=test_case_score if test_case_score else [],
+                                                                 time_limit=problem_info["time_limit"],
+                                                                 memory_limit=problem_info["memory_limit"],
+                                                                 samples=problem_info["samples"],
+                                                                 template=problem_info["template"],
+                                                                 rule_type=problem_info["rule_type"],
+                                                                 source=problem_info["source"],
+                                                                 spj=spj,
+                                                                 spj_code=problem_info["spj"]["code"] if spj else None,
+                                                                 spj_language=problem_info["spj"][
+                                                                     "language"] if spj else None,
+                                                                 spj_version=rand_str(8) if spj else "",
+                                                                 languages=SysOptions.language_names,
+                                                                 created_by=request.user,
+                                                                 visible=False,
+                                                                 difficulty=Difficulty.MID,
+                                                                 total_score=sum(item["score"] for item in test_case_score)
+                                                                 if rule_type == ProblemRuleType.OI else 0,
+                                                                 test_case_id=test_case_id
+                                                                 )
+                            logger.info(f"Created problem {problem_obj._id} with ID {problem_obj.id}")
+                            
+                            for tag_name in problem_info["tags"]:
+                                tag_obj, _ = ProblemTag.objects.get_or_create(name=tag_name)
+                                problem_obj.tags.add(tag_obj)
+                        except Exception as e:
+                            logger.error(f"Failed to create problem object: {e}")
+                            return self.error(f"Failed to create problem: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error during import: {e}")
+            return self.error(f"Import failed: {str(e)}")
+        finally:
+            # Clean up temporary file
+            if os.path.exists(tmp_file):
+                try:
+                    os.remove(tmp_file)
+                except:
+                    pass
+        
+        logger.info(f"Successfully imported {count} problems")
         return self.success({"import_count": count})
 
 
