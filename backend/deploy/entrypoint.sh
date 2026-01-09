@@ -46,11 +46,14 @@ if [ -z "$MAX_WORKER_NUM" ]; then
     fi
 fi
 
-cd $APP/dist
-if [ ! -z "$STATIC_CDN_HOST" ]; then
-    find . -name "*.*" -type f -exec sed -i "s/__STATIC_CDN_HOST__/\/$STATIC_CDN_HOST/g" {} \;
-else
-    find . -name "*.*" -type f -exec sed -i "s/__STATIC_CDN_HOST__\///g" {} \;
+# Only process dist directory if it exists (for production builds)
+if [ -d "$APP/dist" ]; then
+    cd $APP/dist
+    if [ ! -z "$STATIC_CDN_HOST" ]; then
+        find . -name "*.*" -type f -exec sed -i "s/__STATIC_CDN_HOST__/\/$STATIC_CDN_HOST/g" {} \;
+    else
+        find . -name "*.*" -type f -exec sed -i "s/__STATIC_CDN_HOST__\///g" {} \;
+    fi
 fi
 
 cd $APP
@@ -71,7 +74,12 @@ done
 addgroup -g 903 spj
 adduser -u 900 -S -G spj server
 
-chown -R server:spj $DATA $APP/dist
+# Only chown dist if it exists
+if [ -d "$APP/dist" ]; then
+    chown -R server:spj $DATA $APP/dist
+else
+    chown -R server:spj $DATA
+fi
 find $DATA/test_case -type d -exec chmod 710 {} \;
 find $DATA/test_case -type f -exec chmod 640 {} \;
 exec supervisord -c /app/deploy/supervisord.conf

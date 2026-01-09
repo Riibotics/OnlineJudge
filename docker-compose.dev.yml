@@ -8,7 +8,8 @@ services:
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
-      - ./backend/data/redis:/data
+      # Named volume for Redis data persistence
+      - oj-redis-data:/data
 
   oj-postgres:
     image: postgres:10-alpine
@@ -17,7 +18,8 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - ./backend/data/postgres:/var/lib/postgresql/data
+      # Named volume for PostgreSQL data persistence
+      - oj-postgres-data:/var/lib/postgresql/data
     environment:
       - POSTGRES_DB=onlinejudge
       - POSTGRES_USER=onlinejudge
@@ -35,7 +37,14 @@ services:
     volumes:
       # Mount local code for development
       - ./backend:/app
-      - ./backend/data/backend:/data
+      # Named volume for backend data (uploaded files, test cases, etc.)
+      - oj-backend-data:/data
+      # Named volume for logs
+      - oj-backend-logs:/app/log
+      # Local mount for test cases (for easy management)
+      - ./backend/data/test_case:/data/test_case
+      # Local mount for public files
+      - ./backend/data/public:/data/public
     environment:
       - POSTGRES_DB=onlinejudge
       - POSTGRES_USER=onlinejudge
@@ -46,7 +55,7 @@ services:
       - REDIS_PORT=6379
       - OJ_ENV=production
       # Judge server token (match with judge server if needed)
-      - JUDGE_SERVER_TOKEN=CHANGE_THIS
+      - JUDGE_SERVER_TOKEN=dev_judge_token_change_in_production
     ports:
       - "0.0.0.0:8000:8000"
 
@@ -68,3 +77,35 @@ services:
       - "0.0.0.0:8080:8080"
     depends_on:
       - oj-backend
+
+  oj-judge-server:
+    image: registry.cn-hangzhou.aliyuncs.com/onlinejudge/judge_server
+    container_name: oj-judge-server-dev
+    restart: always
+    privileged: true
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:12358:8080"
+    volumes:
+      - oj-judge-logs:/log
+      - ./backend/data/test_case:/test_case:ro
+    environment:
+      - SERVICE_URL=http://oj-judge-server-dev:8080
+      - BACKEND_URL=http://oj-backend:8000/api/judge_server_heartbeat/
+      - TOKEN=dev_judge_token_change_in_production
+    depends_on:
+      - oj-backend
+
+# Named volumes for data persistence
+# These volumes will survive container deletion and recreation
+volumes:
+  oj-redis-data:
+    driver: local
+  oj-postgres-data:
+    driver: local
+  oj-backend-data:
+    driver: local
+  oj-backend-logs:
+    driver: local
+  oj-judge-logs:
+    driver: local
