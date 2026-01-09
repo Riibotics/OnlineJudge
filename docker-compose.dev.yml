@@ -74,7 +74,7 @@ services:
     environment:
       - TARGET=http://oj-backend:8000
     ports:
-      - "0.0.0.0:8080:8080"
+      - "0.0.0.0:80:8080"
     depends_on:
       - oj-backend
 
