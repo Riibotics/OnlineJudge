@@ -11,12 +11,36 @@ import xml.etree.ElementTree as ET
 
 class FPSParser(object):
     def __init__(self, fps_path=None, string_data=None):
-        if fps_path:
-            self._etree = ET.parse(fps_path).getroot()
-        elif string_data:
-            self._ertree = ET.fromstring(string_data).getroot()
-        else:
-            raise ValueError("You must tell me the file path or directly give me the data for the file")
+        try:
+            if fps_path:
+                # Check if file exists and is readable
+                if not os.path.exists(fps_path):
+                    raise ValueError(f"FPS file not found: {fps_path}")
+                
+                # Try to read the file content for debugging
+                with open(fps_path, 'rb') as f:
+                    content = f.read()
+                    if len(content) == 0:
+                        raise ValueError("FPS file is empty")
+                    # Check if it's a ZIP file instead of XML
+                    if content[:2] == b'PK':
+                        raise ValueError("Uploaded file appears to be a ZIP file. Please extract and upload the fps.xml file directly, or use the correct import method.")
+                    # Check for common encoding issues
+                    if content[:3] == b'\xef\xbb\xbf':  # UTF-8 BOM
+                        content = content[3:]
+                
+                self._etree = ET.fromstring(content)
+            elif string_data:
+                self._etree = ET.fromstring(string_data)
+            else:
+                raise ValueError("You must tell me the file path or directly give me the data for the file")
+        except ET.ParseError as e:
+            raise ValueError(f"Invalid XML format in FPS file: {str(e)}")
+        except Exception as e:
+            if "Invalid XML format" in str(e) or "FPS file" in str(e):
+                raise
+            raise ValueError(f"Failed to parse FPS file: {str(e)}")
+            
         version = self._etree.attrib.get("version", "No Version")
         if version not in ["1.1", "1.2"]:
             raise ValueError("Unsupported version '" + version + "'")

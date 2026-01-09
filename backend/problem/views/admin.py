@@ -5,6 +5,7 @@ import logging
 # import shutil
 import tempfile
 import zipfile
+import xml.etree.ElementTree as ET
 from wsgiref.util import FileWrapper
 
 from django.conf import settings
@@ -741,14 +742,78 @@ class FPSProblemImport(CSRFExemptAPIView):
         form = UploadProblemForm(request.POST, request.FILES)
         if form.is_valid():
             file = form.cleaned_data["file"]
-            with tempfile.NamedTemporaryFile("wb") as tf:
-                for chunk in file.chunks(4096):
-                    tf.file.write(chunk)
+            temp_dir = None
+            try:
+                with tempfile.NamedTemporaryFile("wb", delete=False) as tf:
+                    for chunk in file.chunks(4096):
+                        tf.file.write(chunk)
 
-                tf.file.flush()
-                os.fsync(tf.file)
+                    tf.file.flush()
+                    os.fsync(tf.file)
+                    temp_file_path = tf.name
 
-                problems = FPSParser(tf.name).parse()
+                logger.info(f"Uploaded file saved to: {temp_file_path}")
+                
+                # Check if it's a ZIP file
+                fps_xml_path = None
+                if zipfile.is_zipfile(temp_file_path):
+                    logger.info("Detected ZIP file, extracting...")
+                    temp_dir = tempfile.mkdtemp()
+                    try:
+                        with zipfile.ZipFile(temp_file_path, 'r') as zip_ref:
+                            zip_ref.extractall(temp_dir)
+                        
+                        # Find fps.xml in the extracted directory
+                        for root, dirs, files in os.walk(temp_dir):
+                            if 'fps.xml' in files:
+                                fps_xml_path = os.path.join(root, 'fps.xml')
+                                logger.info(f"Found fps.xml at: {fps_xml_path}")
+                                break
+                        
+                        if not fps_xml_path:
+                            # Check if it's OnlineJudge export format (problem.json)
+                            logger.info("No fps.xml found, checking for OnlineJudge format (problem.json)...")
+                            has_problem_json = False
+                            try:
+                                with zipfile.ZipFile(temp_file_path, 'r') as zf:
+                                    for name in zf.namelist():
+                                        if 'problem.json' in name:
+                                            has_problem_json = True
+                                            break
+                            except:
+                                pass
+                            
+                            if has_problem_json:
+                                return self.error("This appears to be an OnlineJudge export format. Please use 'Import QDUOJ Problems' instead of 'Import FPS Problems'.")
+                            else:
+                                return self.error("No fps.xml or problem.json file found in the ZIP archive. Please check the file format.")
+                    except zipfile.BadZipFile as e:
+                        logger.error(f"Invalid ZIP file: {str(e)}")
+                        return self.error(f"Invalid ZIP file: {str(e)}")
+                else:
+                    # Assume it's a direct XML file
+                    fps_xml_path = temp_file_path
+                
+                try:
+                    problems = FPSParser(fps_xml_path).parse()
+                    logger.info(f"Successfully parsed {len(problems)} problems from FPS file")
+                except ET.ParseError as e:
+                    logger.error(f"XML Parse error: {str(e)}")
+                    return self.error(f"Invalid FPS XML format: {str(e)}")
+                except Exception as e:
+                    logger.error(f"FPS Parser error: {str(e)}", exc_info=True)
+                    return self.error(f"Failed to parse FPS file: {str(e)}")
+                finally:
+                    # Clean up temp file
+                    if os.path.exists(temp_file_path):
+                        os.unlink(temp_file_path)
+                    # Clean up temp directory
+                    if temp_dir and os.path.exists(temp_dir):
+                        import shutil
+                        shutil.rmtree(temp_dir)
+            except Exception as e:
+                logger.error(f"File upload error: {str(e)}", exc_info=True)
+                return self.error(f"Failed to process uploaded file: {str(e)}")
         else:
             return self.error("Parse upload file error")
 
