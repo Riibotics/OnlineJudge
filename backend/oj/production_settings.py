@@ -21,3 +21,7 @@ DEBUG = False
 ALLOWED_HOSTS = ['*']
 
 DATA_DIR = "/data"
+
+CSRF_TRUSTED_ORIGINS = ["https://coding.riibotics.io", "http://coding.riibotics.io"]
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
